@@ -2223,7 +2223,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, page.encode("utf-8"), "text/html; charset=utf-8", extra=extra)
         if path == "/welcome.mp4":                  # the welcome popup's tour (it ships with Fizgig: no network)
             return self._stream(os.path.join(STATIC_DIR, "welcome_v8.mp4"), attachment=False)  # ranged: it seeks
-        if path in ("/app.js", "/style.css", "/qrcode.js"):
+        if path in ("/app.js", "/style.css", "/qrcode.js", "/monkap.js", "/monkap_geo.js", "/monkap.css"):
             return self._file(os.path.join(STATIC_DIR, path[1:]),
                               "application/javascript; charset=utf-8" if path.endswith(".js") else "text/css")
         if path == "/icon.png":
@@ -2236,6 +2236,9 @@ class Handler(BaseHTTPRequestHandler):
         if not path.startswith("/api/") or not self._api_ok(qs):
             return None if path.startswith("/api/") else self.json({"error": "not found"}, 404)
 
+        if path.startswith("/api/monkap/"):           # MonKap, the dataset workbench (web/monkap_api.py)
+            from fizgig.web import monkap_api
+            return monkap_api.get(self, path, qs)
         if path == "/api/schema":
             return self.json({**get_schema(ref_dit_set=bool(pref_path(load_prefs(), "minimax_ref_dit"))),
                               "logged_in": True, "outdated": _code_stamp() > _STARTED_CODE + 1})
@@ -2849,6 +2852,9 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, OSError) as e:
                 return self.json({"error": str(e)}, 400)
         b = self._body()
+        if path.startswith("/api/monkap/"):
+            from fizgig.web import monkap_api
+            return monkap_api.post(self, path, b)
         try:
             if path == "/api/form/state":
                 if b.get("family") == refmod.KEY:
