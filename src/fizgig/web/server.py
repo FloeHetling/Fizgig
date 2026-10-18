@@ -33,7 +33,7 @@ from urllib.parse import parse_qs, urlparse
 
 from fizgig.families import form, launch
 from fizgig.families.registry import get as get_family, training_families
-from fizgig.web import captions, history
+from fizgig.web import captions, history, lmstudio
 from fizgig.web import queue as webqueue
 from fizgig.web import prep_jobs
 from fizgig.families import refmod
@@ -2275,6 +2275,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.json({"word": folder_trigger((qs.get("folder") or [""])[0])})
         if path == "/api/fetch":
             return self.json(_fetch_status())
+        if path == "/api/captions/lmstudio":         # the models LM Studio could caption with (the page's address)
+            try:
+                found = lmstudio.list_models((qs.get("url") or [""])[0])
+                return self.json({"models": [{**m, "name": lmstudio.PREFIX + m["id"]} for m in found]})
+            except (OSError, ValueError) as e:
+                return self.json({"models": [], "error": str(e)})
         if path == "/api/captions/options":
             p = load_prefs()
             cap = pref_path(p, "krea2_text_encoder")
@@ -3168,14 +3174,16 @@ class Handler(BaseHTTPRequestHandler):
                 prefs, folder, clips, photos, _ = _caption_args(b)
                 cap = pref_path(prefs, "krea2_text_encoder")
                 model = str(b.get("model") or "")
-                _caption_gpu_check(8.0 if model == captions.QWEN_MODEL else 2.5)
+                if not lmstudio.is_model(model):               # an LM Studio model runs on its own server
+                    _caption_gpu_check(8.0 if model == captions.QWEN_MODEL else 2.5)
                 only = [p for p in (b.get("only") or []) if os.path.dirname(os.path.abspath(p)) ==
                         os.path.abspath(folder)]
                 return self.json(captions.ai_captions(
                     prefs, cap if cap and os.path.isfile(cap) else "", folder, model, str(b.get("task") or ""),
                     str(b.get("instruction") or ""), int(b.get("max_tokens") or 120), str(b.get("trigger") or ""),
                     bool(b.get("overwrite")), clips, only=only or None, photos=photos,
-                    ext=captions.caption_ext(b.get("ext"))))
+                    ext=captions.caption_ext(b.get("ext")), lm_url=str(b.get("lm_url") or ""),
+                    lm_think=bool(b.get("lm_think"))))
             if path.startswith("/api/studio/"):
                 try:
                     return self.json(_studio_post(path[len("/api/studio/"):], b))
