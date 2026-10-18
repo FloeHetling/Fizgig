@@ -5045,10 +5045,13 @@ S.cap = {page: 0, items: [], opts: null, lastState: ""};
 function capSettings() {
   return {trigger: $("capTrigger").value, model: $("capModel").value, task: $("capTask").value,
     tokens: $("capTokens").value, overwrite: $("capOverwrite").checked, songWords: $("capSongWords").value,
-    skipCjk: $("capSkipCjk").checked, perPage: $("capPerPage").value};
+    skipCjk: $("capSkipCjk").checked, perPage: $("capPerPage").value,
+    lmUrl: $("capLmUrl").value.trim(), lmThink: $("capLmThink").checked};
 }
 const saveCapSoon = debounce(() => { S.capSaved = capSettings(); api("/api/state", {captions: S.capSaved}).catch(() => {}); }, 600);
-const qwenOn = () => !!S.cap.opts && S.cap.opts.qwen_available && $("capModel").value === S.cap.opts.qwen_model;
+const lmOn = () => $("capModel").value.startsWith("LM Studio: ");          // a model served by LM Studio
+// the models that follow an instruction: Qwen3-VL from the Krea 2 text encoder, and the LM Studio ones
+const qwenOn = () => !!S.cap.opts && (lmOn() || (S.cap.opts.qwen_available && $("capModel").value === S.cap.opts.qwen_model));
 const qwenTask = () => (S.cap.opts.qwen_tasks || []).find((t) => t.label === $("capTask").value);
 
 async function loadCaptionOptions() {
@@ -5057,7 +5060,10 @@ async function loadCaptionOptions() {
   const model = $("capModel");
   model.innerHTML = "";
   for (const m of o.models) model.append(el("option", {value: m, text: m}));
-  model.value = o.models.includes(saved.model) ? saved.model : o.default_model;
+  if (saved.lmUrl !== undefined) $("capLmUrl").value = saved.lmUrl;
+  if (saved.lmThink !== undefined) $("capLmThink").checked = saved.lmThink;
+  await loadLmModels(saved.model);
+  model.value = [...model.options].some((x) => x.value === saved.model) ? saved.model : o.default_model;
   $("capModelHint").textContent = o.qwen_available ?
     "Qwen3-VL (the Krea 2 text encoder from Preferences) follows an instruction you can edit and writes the best " +
     "training captions. Florence-2 downloads itself the first time." :
@@ -5076,8 +5082,28 @@ async function loadCaptionOptions() {
   document.querySelector("#capAll").closest(".section-card").style.display = pictures ? "" : "none";
   for (const id of ["capModel", "capTask", "capTokens"]) $(id).closest(".field-row").style.display = pictures ? "" : "none";
   $("capModelHint").style.display = pictures ? "" : "none";
+  $("capLmRow").style.display = $("capLmHint").style.display = pictures ? "" : "none";
   if (!pictures) $("capInstrBox").style.display = "none";
   if (o.song_words) { $("capSongWords").placeholder = "e.g. " + o.song_words; $("capSongWords").value = saved.songWords || ""; }
+}
+
+// the models LM Studio offers (the ones that see pictures) join the list; asked again by Refresh or a new address
+async function loadLmModels(keep) {
+  const sel = $("capModel"), cur = keep === undefined ? sel.value : keep;
+  let r;
+  try { r = await api("/api/captions/lmstudio?url=" + encodeURIComponent($("capLmUrl").value.trim())); }
+  catch (e) { r = {models: [], error: e.message}; }
+  for (const o of [...sel.options]) if (o.dataset.lm) o.remove();
+  for (const m of r.models) {
+    const o = el("option", {value: m.name, text: m.name + (m.loaded ? " (loaded)" : "")});
+    o.dataset.lm = "1";
+    sel.append(o);
+  }
+  if ([...sel.options].some((x) => x.value === cur)) sel.value = cur;
+  $("capLmHint").textContent = r.error ? `${r.error} Start LM Studio's server, or set its address.` :
+    r.models.length ? `${r.models.length} LM Studio model${r.models.length > 1 ? "s" : ""} that can see pictures, in the Model list. ` +
+      "The pictures are sent to this address, so use one you trust." :
+    "LM Studio answered, but has no model that can see pictures.";
 }
 
 function fillTasks(want) {
@@ -5127,7 +5153,8 @@ function capJobBody(extra = {}) {
   const t = qwenOn() && qwenTask();
   return {family: S.family, folder: S.imageFolder, model: $("capModel").value, task: $("capTask").value, ext: capExt(),
     instruction: t ? t.instruction : "", max_tokens: Number($("capTokens").value) || 120,
-    trigger: $("capTrigger").value, overwrite: $("capOverwrite").checked, ...extra};
+    trigger: $("capTrigger").value, overwrite: $("capOverwrite").checked,
+    lm_url: lmOn() ? $("capLmUrl").value.trim() : "", lm_think: $("capLmThink").checked, ...extra};
 }
 
 async function capRun(path, body) {
@@ -5328,6 +5355,15 @@ function wireCaptions() {
     syncInputs(["DATASET_CAPTION_EXT"]); saveStateSoon(); loadCaptions();
   });
   $("capModel").addEventListener("change", () => { fillTasks(); onCapTask(); });
+  const lmChanged = async () => {
+    const was = $("capModel").value;
+    await loadLmModels(was);
+    if ($("capModel").value !== was) { fillTasks(); onCapTask(); }
+    saveCapSoon();
+  };
+  $("capLmUrl").addEventListener("change", lmChanged);
+  $("capLmRefresh").addEventListener("click", lmChanged);
+  $("capLmThink").addEventListener("change", saveCapSoon);
   $("capPerPage").addEventListener("change", () => {
     CAP_PAGE = Number($("capPerPage").value) || 12; S.cap.page = 0; renderCaptions(); saveCapSoon(); });
   $("capTask").addEventListener("change", onCapTask);

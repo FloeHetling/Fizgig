@@ -336,6 +336,11 @@
               <div class="field-row"><span class="field-label">Model:</span>
                 <select id="capModel" class="w-combo-lg"></select></div>
               <div class="field-hint" id="capModelHint"></div>
+              <div class="field-row" id="capLmRow"><span class="field-label">LM Studio:</span>
+                <input type="text" id="capLmUrl" class="w-combo-lg" placeholder="http://localhost:1234" spellcheck="false">
+                <button class="btn" id="capLmRefresh">Refresh</button>
+                <label class="checkbox-label"><input type="checkbox" id="capLmThink"> Let the model think</label></div>
+              <div class="field-hint" id="capLmHint"></div>
               <div class="field-row"><span class="field-label">Task:</span>
                 <select id="capTask" class="w-combo-lg"></select>
                 <button class="btn" id="capEditInstr">Edit instructions…</button></div>

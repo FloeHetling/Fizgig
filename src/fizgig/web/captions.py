@@ -2,7 +2,8 @@
 
 AI captions use the desktop's own worker (fizgig.scripts.batch_caption --serve): one process that keeps its model
 loaded between batches, so a single re-caption is quick, until Unload, a model change, or a run needs the GPU (it
-quits before any run starts, on either side). Static captions, song captions and Find & Replace are file operations
+quits before any run starts, on either side). A model served by LM Studio is the exception: its pictures go over HTTP
+(fizgig.web.lmstudio) from a thread here, with no worker and nothing loaded on this machine. Static captions, song captions and Find & Replace are file operations
 here. Bilingual translation runs fizgig.scripts.translate_captions. One job at a time; status() is what the page
 polls.
 
@@ -20,6 +21,7 @@ import threading
 import time
 
 from fizgig.user_data import user_file  # noqa: E402  (Fizgig's own files: user_data/)
+from fizgig.web import lmstudio  # noqa: E402
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 JOB_DIR = user_file("caption_jobs")
 
@@ -256,11 +258,14 @@ def _popen(cmd, prefs, stdin=False):
 
 
 def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_tokens, trigger, overwrite, clips,
-                only=None, photos=True, ext=".txt"):
+                only=None, photos=True, ext=".txt", lm_url="", lm_think=False):
     """Caption the folder's pictures (and clips) with Florence-2 or Qwen3-VL, or just `only` (a re-caption). The
-    worker loads once and stays loaded for the next batch."""
+    worker loads once and stays loaded for the next batch. A "LM Studio: …" model goes to that server instead."""
     if _busy():
         raise ValueError("A captioning job is already running. Stop it first.")
+    lm = lmstudio.is_model(model)
+    if lm and not instruction.strip():
+        raise ValueError("Pick a task, or write your own, for the LM Studio model to follow.")
     if model == QWEN_MODEL and not captioner:
         raise ValueError("Qwen3-VL needs the Krea 2 text encoder set in Preferences.")
     images = [p for p in (only or media_files(folder, clips, photos)) if os.path.isfile(p)]
@@ -274,6 +279,8 @@ def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_to
         raise ValueError("Every file already has a caption. Tick Overwrite to caption them again."
                          if not only else "That file isn't there any more.")
     os.makedirs(JOB_DIR, exist_ok=True)
+    if lm:
+        return _lm_captions(lm_url, model, images, instruction, max_tokens, trigger, ext, lm_think, bool(only))
     key = (model, captioner if model == QWEN_MODEL else "", bool(clips))
     with _lock:
         alive = _st["proc"] is not None and _st["proc"].poll() is None
@@ -332,6 +339,43 @@ def ai_captions(prefs, captioner, folder, model, task_label, instruction, max_to
             pass
     threading.Thread(target=send, daemon=True).start()
     _log(f"Captioning {len(images)} file{'s' if len(images) != 1 else ''} with {model}")
+    return {"files": len(images)}
+
+
+def _lm_captions(url, model, images, instruction, max_tokens, trigger, ext, think, re_caption):
+    """The LM Studio job: a thread that sends the pictures one by one (status() and Stop work as for the worker)."""
+    url = lmstudio.base_url(url)
+    os.makedirs(JOB_DIR, exist_ok=True)
+    stop_file = os.path.join(JOB_DIR, "stop")
+    try:
+        os.remove(stop_file)
+    except OSError:
+        pass
+    with _lock:
+        _st.update(state="running", job="re-caption" if re_caption else "captions", model=model, done=0,
+                   total=len(images), ok=0, fail=0)
+
+    def progress(i, total):
+        with _lock:
+            _st["done"], _st["total"] = i, total
+
+    def result(ok, base, why):
+        with _lock:
+            _st["ok" if ok else "fail"] += 1
+        _log(f"OK: {base}" if ok else f"FAIL: {base} ({why})")
+
+    def work():
+        stopped = False
+        try:
+            stopped = lmstudio.run_job(url, model, images, instruction.strip(), max_tokens, trigger.strip(), ext, think,
+                                       stop_file, progress, result)
+        except Exception as e:                    # nothing here should end the thread without the page hearing of it
+            _log(f"FAIL: {e}")
+        _log("STOPPED" if stopped else "DONE")
+        with _lock:
+            _st.update(state="idle", job="", model="")
+    threading.Thread(target=work, daemon=True).start()
+    _log(f"Captioning {len(images)} file{'s' if len(images) != 1 else ''} with {model} at {url}")
     return {"files": len(images)}
 
 
